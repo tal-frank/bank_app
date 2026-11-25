@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Register</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1565c0}a:hover{color:#0d47a1}
+.wf-input{box-sizing:border-box;width:100%;height:48px;padding:0 14px;border:1px solid #9e9e9e;border-radius:6px;font:inherit;font-size:16px;color:#212121;background:#fff}
+.wf-input::placeholder{color:#757575}
+</style>
+</helmet>
+<div style="min-height: 800px; background: #f5f5f5; font-family: Inter, system-ui, sans-serif; color: #212121; display: flex; flex-direction: column">
+  <header style="height: 64px; background: #424242; color: #fff; display: flex; align-items: center; padding: 0 24px">
+    <span style="font-size: 20px; font-weight: 600">Bank App</span>
+  </header>
+  <main style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 16px">
+    <form style="width: 100%; max-width: 440px; background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <h1 style="margin: 0; font-size: 26px; font-weight: 700">Create your account</h1>
+        <p style="margin: 0; font-size: 15px; color: #616161">Step 1 of 2. We'll send a 6-digit code to verify it's you.</p>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <label for="r-email" style="font-size: 14px; font-weight: 500">Email</label>
+        <input id="r-email" class="wf-input" type="email" placeholder="dana@example.com">
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <label for="r-pass" style="font-size: 14px; font-weight: 500">Password</label>
+        <input id="r-pass" class="wf-input" type="password" placeholder="••••••••">
+        <span style="font-size: 13px; color: #616161">8–72 characters, at least one letter and one digit.</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <label for="r-phone" style="font-size: 14px; font-weight: 500">Phone</label>
+        <input id="r-phone" class="wf-input" type="tel" placeholder="+972501234567">
+        <span style="font-size: 13px; color: #616161">International format, no spaces.</span>
+      </div>
+      <fieldset style="border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
+        <legend style="font-size: 14px; font-weight: 500; padding: 0; margin-bottom: 8px">Send my code by</legend>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #1565c0; border-radius: 6px; overflow: hidden">
+          <button type="button" aria-pressed="true" style="height: 44px; border: 0; background: #1565c0; color: #fff; font: inherit; font-weight: 600; font-size: 15px">Email</button>
+          <button type="button" aria-pressed="false" style="height: 44px; border: 0; border-left: 1px solid #1565c0; background: #fff; color: #1565c0; font: inherit; font-weight: 600; font-size: 15px">SMS</button>
+        </div>
+      </fieldset>
+      <a href="Otp.dc.html" style="height: 48px; border-radius: 6px; background: #1565c0; color: #fff; text-decoration: none; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 16px">Create account</a>
+      <p style="margin: 0; font-size: 14px; color: #616161; text-align: center">Already have an account? <a href="Login.dc.html">Log in</a></p>
+    </form>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":800}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

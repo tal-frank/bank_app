@@ -1,0 +1,15 @@
+# Dependencies - reinstalled from package-lock.json with `npm install`
+node_modules/
+
+# Secrets - never commit. Commit .env.example (names only) instead.
+.env
+.env.*
+!.env.example
+
+# Build and test output
+dist/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*

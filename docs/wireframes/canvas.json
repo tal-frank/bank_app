@@ -1,0 +1,21 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-11-22T12:00:00Z"},
+  "title": "Bank App Wireframes",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 1280, "h": 800, "title": "1 · Register", "expand": "fill", "is_interactive": true},
+    "Otp.dc.html": {"x": 1360, "y": 0, "w": 1280, "h": 800, "title": "2 · Verify code (OTP)", "expand": "fill", "is_interactive": true},
+    "Login.dc.html": {"x": 2720, "y": 0, "w": 1280, "h": 800, "title": "3 · Log in", "expand": "fill", "is_interactive": true},
+    "Dashboard.dc.html": {"x": 0, "y": 920, "w": 1280, "h": 900, "title": "4 · Dashboard", "expand": "fill", "is_interactive": true},
+    "Transfer.dc.html": {"x": 1360, "y": 920, "w": 1280, "h": 900, "title": "5 · Transfer", "expand": "fill", "is_interactive": true},
+    "SignedOut.dc.html": {"x": 2720, "y": 920, "w": 1280, "h": 900, "title": "6 · Signed out", "expand": "fill", "is_interactive": true},
+    "Errors.dc.html": {"x": 0, "y": 1940, "w": 1440, "h": 1500, "title": "7 · Error and loading states", "expand": "fill"}
+  },
+  "order": ["Main.dc.html", "Otp.dc.html", "Login.dc.html", "Dashboard.dc.html", "Transfer.dc.html", "SignedOut.dc.html", "Errors.dc.html"],
+  "notes": {
+    "flow": {"x": 4080, "y": 0, "w": 360, "size": "m", "fill": "blue", "text": "Flow: Register → Verify code → Dashboard → Send money → Log out → Log in.\nPress Play on any screen and click the buttons.\nAll error text is copied from the server (services/, validation/)."}
+  },
+  "designSystems": []
+}

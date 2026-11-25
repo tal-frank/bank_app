@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "client-test",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "source ~/.nvm/nvm.sh && cd client && VITE_API_URL=http://localhost:3100/api npx vite --port 5180 --strictPort"],
+      "port": 5180
+    },
+    {
+      "name": "server-test",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "source ~/.nvm/nvm.sh && cd server && NODE_ENV=test PORT=3100 OTP_EMAIL_MODE=console CLIENT_URL=http://localhost:5180 ACCESS_TOKEN_TTL_MINUTES=1 OTP_TTL_MINUTES=1 node src/server.js"],
+      "port": 3100
+    }
+  ]
+}

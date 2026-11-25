@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signed out</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#1565c0}a:hover{color:#0d47a1}
+</style>
+</helmet>
+<div style="min-height: 900px; background: #f5f5f5; font-family: Inter, system-ui, sans-serif; color: #212121; display: flex; flex-direction: column">
+  <header style="height: 64px; background: #424242; color: #fff; display: flex; align-items: center; padding: 0 24px">
+    <span style="font-size: 20px; font-weight: 600">Bank App</span>
+  </header>
+  <main style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px 16px">
+    <section style="width: 100%; max-width: 440px; background: #fff; border: 1px solid #e0e0e0; border-radius: 12px; padding: 40px 32px; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center">
+      <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="#2e7d32" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M7.5 12.5l3 3 6-6"></path></svg>
+      <h1 style="margin: 0; font-size: 26px; font-weight: 700">You're signed out</h1>
+      <p style="margin: 0; font-size: 15px; color: #616161; line-height: 1.5">Your session on this device has ended.</p>
+      <a href="Login.dc.html" style="width: 100%; height: 48px; border-radius: 6px; background: #1565c0; color: #fff; text-decoration: none; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 16px; margin-top: 8px">Log in again</a>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,1044 @@
+# =============================================================================
+# Web Banking App - REST API contract (Phase 1)
+# =============================================================================
+# This file is the contract between the frontend and the backend.
+#   - Phase 2 implements the Express routes to match it exactly.
+#   - swagger-ui-express will serve it at /api/docs as interactive docs.
+#   - Postman can import it (Import -> File) to generate a request collection.
+#   - The React app (Phase 5) calls exactly these endpoints and shapes.
+# If the API needs to change later, change this file FIRST, then the code.
+#
+# Conventions used everywhere below:
+#   - Money is an INTEGER number of agorot (1 ILS = 100 agorot). Floats can't
+#     represent 0.1 exactly, so 0.1 + 0.2 != 0.3. Integers never round.
+#   - The logged-in user is always taken from the JWT, never from the URL or
+#     the body. That's why there is /users/me and no /users/{id}.
+#   - Every error has the same shape (see components.schemas.Error), so the
+#     frontend can handle all errors with one piece of code.
+# =============================================================================
+
+# Version of the OpenAPI format itself (not of our API). 3.0.3 is supported by
+# swagger-ui-express, Postman and most code generators.
+openapi: 3.0.3
+
+# ---------------------------------------------------------------------------
+# info: human-readable metadata shown at the top of Swagger UI.
+# ---------------------------------------------------------------------------
+info:
+  title: Web Banking API
+  version: 0.1.0 # OUR API's version. Bump it when the contract changes.
+  description: |
+    REST API for the web banking app: sign-up with OTP verification (email or
+    SMS), login with JWT, account balance, transaction history and money
+    transfers between users.
+
+    **Money:** all amounts are integers in agorot (ILS cents). `2500` = ₪25.00.
+
+    **Auth:** send the access token as `Authorization: Bearer <token>`.
+    When it expires (15 min), call `POST /auth/refresh` - the refresh token
+    travels automatically in an httpOnly cookie.
+
+# ---------------------------------------------------------------------------
+# servers: base URLs. Every path below is appended to one of these, so
+# "/auth/login" really means "http://localhost:3000/api/auth/login".
+# The production URL is added in Phase 6 when we deploy to Render.
+# ---------------------------------------------------------------------------
+servers:
+  - url: http://localhost:3000/api
+    description: Local development
+
+# ---------------------------------------------------------------------------
+# tags: groups endpoints into sections in Swagger UI and folders in Postman.
+# ---------------------------------------------------------------------------
+tags:
+  - name: Auth
+    description: Sign-up, OTP verification, login, token refresh, logout
+  - name: Users
+    description: The logged-in user's profile and balance
+  - name: Transactions
+    description: Transaction history and money transfers
+  - name: System
+    description: Health check (used by the hosting platform)
+
+# ---------------------------------------------------------------------------
+# security (top level): the DEFAULT for every endpoint - "a valid bearer JWT
+# is required". Public endpoints (signup, login...) override it with
+# `security: []`. Secure-by-default means a forgotten line leaves an endpoint
+# protected rather than accidentally public.
+# ---------------------------------------------------------------------------
+security:
+  - bearerAuth: []
+
+# =============================================================================
+# paths: every endpoint. Structure per endpoint:
+#   <path>:
+#     <http method>:
+#       summary / description  - docs
+#       security               - who may call it
+#       requestBody            - what the client sends
+#       responses              - EVERY status code the client must handle
+# =============================================================================
+paths:
+
+  # ------------------------------------------------------------- Requirement 1
+  /auth/signup:
+    post:
+      tags: [Auth]
+      operationId: signup # unique name; code generators use it as the function name
+      summary: Register a new user and send a 6-digit OTP
+      description: |
+        Creates the user in a **pending** (unverified) state and sends a
+        6-digit one-time passcode over the chosen channel (email or SMS).
+        The user cannot log in until the code is verified with
+        `POST /auth/verify-otp`.
+
+        If the email already exists - verified or not - the answer is `409`.
+        An unverified user who lost the code should call `POST /auth/resend-otp`
+        before the code expires.
+
+        **A pending account lives only as long as its code** (5 min, extended
+        by each resend). Once the code expires, the account is deleted (TTL
+        index on `otp.expiresAt`, see `DbUser`) and the email is free to sign
+        up again.
+      security: [] # public: you can't have a token before you have an account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '201': # 201 Created (not 200): a new resource - the user - was created
+          description: Pending user created, OTP sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignupResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError' # bad email/phone/password format (req. 1c)
+        '409': # 409 Conflict: the request clashes with existing state (req. 1b)
+          description: Email already registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: EMAIL_TAKEN
+                  message: An account with this email already exists.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502': # 502 Bad Gateway: OUR server is fine, but an upstream service failed
+          description: The email/SMS provider failed to send the OTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: OTP_DELIVERY_FAILED
+                  message: We couldn't send the code. Please try again.
+
+  # ------------------------------------------------------------- Requirement 2
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      operationId: verifyOtp
+      summary: Verify the OTP, activate the account and log the user in
+      description: |
+        Checks the 6-digit code. On success the account becomes verified, a
+        random starting balance is assigned (req. 3b), and the user is logged
+        in immediately - the response has the same shape as `/auth/login`,
+        so the frontend can redirect straight to the dashboard (req. 2b).
+
+        A code expires after 5 minutes and allows at most 5 wrong attempts.
+        An unknown email gets the same `400 INVALID_OTP` as a wrong code, so
+        this endpoint can't be used to discover pending accounts.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: Verified and logged in
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SetRefreshCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400': # req. 2c - wrong code. Different `code` values let the UI show different messages.
+          description: Code is wrong, expired, or the request is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                wrongCode:
+                  value:
+                    error:
+                      code: INVALID_OTP
+                      message: The code is incorrect.
+                expired:
+                  value:
+                    error:
+                      code: OTP_EXPIRED
+                      message: The code has expired. Request a new one.
+        '409':
+          description: Account is already verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: ALREADY_VERIFIED
+                  message: This account is already verified. Please log in.
+        '429': # stops someone guessing all 1,000,000 codes
+          description: Too many wrong attempts for this code (OTP_ATTEMPTS_EXCEEDED), or too many requests from this IP (RATE_LIMITED)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: OTP_ATTEMPTS_EXCEEDED
+                  message: Too many attempts. Request a new code.
+
+  /auth/resend-otp:
+    post:
+      tags: [Auth]
+      operationId: resendOtp
+      summary: Send a new OTP to a pending user
+      description: |
+        Invalidates the previous code and sends a new one over the channel
+        chosen at sign-up. Rate-limited (e.g. 1 per minute) because every
+        SMS costs money and repeated sends could be used to spam someone.
+
+        The new code's expiry also extends the pending account's life. Once
+        the old code expired, the account is deleted, and this returns
+        `404 USER_NOT_FOUND`: the user must sign up again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendOtpRequest'
+      responses:
+        '200':
+          description: New code sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignupResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          description: No pending account with this email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: USER_NOT_FOUND
+                  message: No account found for this email.
+        '409':
+          description: Account is already verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: ALREADY_VERIFIED
+                  message: This account is already verified. Please log in.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: The email/SMS provider failed to send the OTP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ------------------------------------------------------------- Requirement 4
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Log in with email and password
+      description: |
+        Returns a short-lived access token (JWT, 15 min) in the body and sets
+        a long-lived refresh token (7 days) in an httpOnly cookie.
+
+        The 401 message is deliberately the same for "no such email" and
+        "wrong password", so attackers can't use login to discover which
+        emails have accounts.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Logged in
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SetRefreshCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401': # 401: "we don't know who you are" (req. 4b)
+          description: Wrong email or password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: Invalid email or password.
+        '403': # 403: "we know who you are, but you're not allowed yet"
+          description: Correct credentials, but the account is not verified yet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: ACCOUNT_NOT_VERIFIED
+                  message: Please verify your account with the code we sent.
+        '429':
+          $ref: '#/components/responses/TooManyRequests' # slows down password guessing
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Get a new access token using the refresh cookie
+      description: |
+        Called by the frontend when a request returns 401 with code
+        `TOKEN_EXPIRED`. The browser sends the httpOnly refresh cookie
+        automatically. The refresh token is **rotated**: a new one replaces
+        it, and the old one stops working, so a stolen refresh token can be
+        used at most once.
+      security:
+        - refreshCookie: []
+      responses:
+        '200':
+          description: New access token issued
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/SetRefreshCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '401':
+          description: Refresh cookie missing, invalid, expired or already used - the user must log in again
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: UNAUTHORIZED
+                  message: Session expired. Please log in again.
+
+  # ------------------------------------------------------------ Requirement 3d
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Sign out
+      description: |
+        Revokes the refresh token on the server and clears the cookie. The
+        frontend also deletes the access token from memory and redirects to
+        /login.
+
+        Works even if the access token already expired (that's why it uses
+        the refresh cookie, not the bearer token), and always returns 204 -
+        logging out twice is not an error.
+      security:
+        - refreshCookie: []
+        - {} # `{}` = "or no auth at all": the cookie is optional here
+      responses:
+        '204': # 204 No Content: success, nothing to return
+          description: Logged out
+          headers:
+            Set-Cookie:
+              description: Clears the refresh cookie (Max-Age=0)
+              schema:
+                type: string
+                example: refreshToken=; Path=/api/auth; Max-Age=0; HttpOnly; Secure; SameSite=Strict
+
+  # ------------------------------------------------------- Requirement 3a + 3c
+  /users/me:
+    get:
+      tags: [Users]
+      operationId: getMe
+      summary: Get the logged-in user's profile and balance
+      description: |
+        "me" is resolved from the JWT. There is no `/users/{id}` on purpose:
+        a user can never ask for someone else's profile by changing an id.
+      # no `security` here -> the global default (bearerAuth) applies
+      responses:
+        '200':
+          description: The current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ------------------------------------------------- Requirement 3c + 5 (a-c)
+  /transactions:
+    get:
+      tags: [Transactions]
+      operationId: listTransactions
+      summary: List the logged-in user's transactions, newest first
+      description: |
+        Returns transactions where the user is either sender or receiver,
+        each shown **from the caller's point of view** (req. 5c): money sent
+        has a negative amount and the receiver's email; money received has a
+        positive amount and the sender's email.
+
+        Paginated, because the history grows forever and the dashboard only
+        needs the most recent ones.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: One page of transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionPage'
+        '400':
+          $ref: '#/components/responses/ValidationError' # e.g. limit=1000
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Transactions]
+      operationId: createTransfer
+      summary: Send money to another registered user
+      description: |
+        Moves `amount` agorot from the logged-in user to the user with
+        `toEmail`. The server performs the debit, the credit and the
+        transaction record **atomically** (all three or none), and checks
+        the balance as part of the debit itself, so two simultaneous
+        transfers can't overdraw the account.
+
+        Transfers are POST to /transactions because, in REST terms, a
+        transfer *creates a transaction resource*.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '201':
+          description: Transfer completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferResponse'
+        '400':
+          description: Invalid amount/email, or sending to yourself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                validation:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: Some fields are invalid.
+                      fields:
+                        amount: Amount must be a positive whole number of agorot.
+                selfTransfer:
+                  value:
+                    error:
+                      code: SELF_TRANSFER
+                      message: You can't send money to yourself.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404': # req. 5b - email doesn't exist
+          description: No verified user with this email
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: RECIPIENT_NOT_FOUND
+                  message: No user found with this email.
+        '422': # 422 Unprocessable: the request is valid, but the business rules refuse it (req. 5b)
+          description: Not enough balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: INSUFFICIENT_FUNDS
+                  message: Your balance is too low for this transfer.
+
+  # --------------------------------------------------------------- Deployment
+  /health:
+    get:
+      tags: [System]
+      operationId: health
+      summary: Liveness check
+      description: |
+        Render (Phase 6) and Docker (Phase 10) call this to know the server is
+        up. Public and cheap - it must not touch user data.
+      security: []
+      responses:
+        '200':
+          description: Server is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+# =============================================================================
+# components: reusable building blocks. Anything referenced with
+# `$ref: '#/components/...'` lives here. Define once, use everywhere - if the
+# email rule changes, it changes in ONE place.
+# =============================================================================
+components:
+
+  # -------------------------------------------------------------------------
+  # securitySchemes: HOW a client proves who it is.
+  # -------------------------------------------------------------------------
+  securitySchemes:
+    bearerAuth:
+      # Client sends:  Authorization: Bearer eyJhbGciOi...
+      # The server verifies the JWT's signature with its secret - no DB lookup
+      # needed. The payload holds only non-secret data (user id, expiry),
+      # because a JWT is SIGNED, not ENCRYPTED: anyone can read it.
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token from /auth/login or /auth/verify-otp. Valid 15 minutes.
+    refreshCookie:
+      # httpOnly cookie = JavaScript on the page can't read it, so an XSS
+      # attack can't steal it. The browser attaches it automatically.
+      type: apiKey
+      in: cookie
+      name: refreshToken
+      description: Refresh token, set by the server. Valid 7 days, rotated on every use.
+
+  # -------------------------------------------------------------------------
+  # parameters: reusable query/path parameters.
+  # -------------------------------------------------------------------------
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Page number, starting at 1
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Items per page. Capped so one request can't fetch the whole history.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 10
+
+  # -------------------------------------------------------------------------
+  # headers: reusable response headers.
+  # -------------------------------------------------------------------------
+  headers:
+    SetRefreshCookie:
+      description: |
+        Sets the refresh token cookie.
+        HttpOnly (JS can't read it), Secure (HTTPS only), SameSite (not sent
+        by other sites' requests - protects against CSRF), Path=/api/auth
+        (only sent to auth endpoints, not with every request).
+      schema:
+        type: string
+        example: refreshToken=9f2c...e1; Path=/api/auth; Max-Age=604800; HttpOnly; Secure; SameSite=Strict
+
+  # -------------------------------------------------------------------------
+  # responses: reusable whole responses for errors that many endpoints share.
+  # -------------------------------------------------------------------------
+  responses:
+    ValidationError:
+      description: The request body or query failed validation
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Some fields are invalid.
+              fields:
+                email: Must be a valid email address.
+                phone: Must be in international format, e.g. +972501234567.
+    Unauthorized:
+      description: Missing, invalid or expired access token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missing:
+              value:
+                error:
+                  code: UNAUTHORIZED
+                  message: Please log in.
+            expired: # the frontend reacts to THIS code by calling /auth/refresh
+              value:
+                error:
+                  code: TOKEN_EXPIRED
+                  message: Access token expired.
+    TooManyRequests:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying
+          schema:
+            type: integer
+            example: 60
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: RATE_LIMITED
+              message: Too many requests. Please try again later.
+
+  # -------------------------------------------------------------------------
+  # schemas: the data shapes. Small "field" schemas first (Email, Phone...),
+  # then request bodies, then response bodies.
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # ---- Field-level building blocks --------------------------------------
+    Email:
+      type: string
+      format: email   # documents intent; the server still validates it
+      maxLength: 254  # the maximum length of a valid email address
+      example: dana@example.com
+      description: Stored and compared in lowercase, so Dana@x.com and dana@x.com are the same account.
+
+    Phone:
+      type: string
+      # E.164 international format: +, country code, number, no spaces.
+      # One format means Twilio accepts it and duplicates are easy to spot.
+      pattern: '^\+[1-9]\d{7,14}$'
+      example: '+972501234567'
+
+    Password:
+      type: string
+      format: password # tells Swagger UI to mask the input
+      minLength: 8
+      # bcrypt only uses the first 72 bytes; longer passwords would be
+      # silently truncated, so we reject them instead.
+      maxLength: 72
+      # at least one letter and one digit
+      pattern: '^(?=.*[A-Za-z])(?=.*\d).+$'
+      writeOnly: true # appears in requests only - NEVER in a response
+      example: Secret123
+
+    OtpChannel:
+      type: string
+      enum: [email, sms]
+      description: Where the one-time passcode is sent.
+      example: email
+
+    OtpCode:
+      # A string, not a number: "012345" as a number would become 12345.
+      type: string
+      pattern: '^\d{6}$'
+      example: '048213'
+
+    Amount:
+      type: integer
+      minimum: 1
+      maximum: 100000000 # ₪1,000,000 per transfer - a sanity cap
+      description: Agorot (ILS cents). 2500 = ₪25.00.
+      example: 2500
+
+    # ---- Request bodies -----------------------------------------------------
+    # `required` lists mandatory fields. `additionalProperties: false` rejects
+    # unknown fields, so a client can't sneak in e.g. "balance": 999999.
+    SignupRequest:
+      type: object
+      required: [email, password, phone, otpChannel]
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          $ref: '#/components/schemas/Password'
+        phone:
+          $ref: '#/components/schemas/Phone'
+        otpChannel:
+          $ref: '#/components/schemas/OtpChannel'
+
+    VerifyOtpRequest:
+      type: object
+      required: [email, code]
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        code:
+          $ref: '#/components/schemas/OtpCode'
+
+    ResendOtpRequest:
+      type: object
+      required: [email]
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      additionalProperties: false
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        password:
+          # No pattern here on purpose: login just checks the hash. If the
+          # password rules change later, old users must still be able to log in.
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 72
+
+    TransferRequest:
+      type: object
+      required: [toEmail, amount]
+      additionalProperties: false
+      properties:
+        toEmail:
+          $ref: '#/components/schemas/Email'
+        amount:
+          $ref: '#/components/schemas/Amount'
+
+    # ---- Response bodies ----------------------------------------------------
+    # `readOnly: true` = only ever in responses; the client can't set it.
+    SignupResponse:
+      type: object
+      required: [email, otpChannel, otpExpiresAt]
+      properties:
+        email:
+          $ref: '#/components/schemas/Email'
+        otpChannel:
+          $ref: '#/components/schemas/OtpChannel'
+        otpExpiresAt:
+          type: string
+          format: date-time # ISO 8601, e.g. 2026-11-12T10:05:00Z
+          description: Lets the UI show a countdown.
+        # Note: the code itself is NEVER returned - that would defeat the point.
+
+    User:
+      type: object
+      required: [id, email, phone, balance, createdAt]
+      properties:
+        id:
+          type: string
+          readOnly: true
+          example: 6730f1c2a9d4e2b1c8f0a123
+        email:
+          $ref: '#/components/schemas/Email'
+        phone:
+          $ref: '#/components/schemas/Phone'
+        balance:
+          type: integer
+          readOnly: true
+          description: Current balance in agorot. Random on sign-up (req. 3b).
+          example: 523400
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+      # Deliberately missing: passwordHash, OTP data, refresh tokens.
+      # The response shape is a whitelist - internal fields can't leak.
+
+    AuthResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn, user]
+      properties:
+        accessToken:
+          type: string
+          description: JWT. Keep it in memory (not localStorage) to limit XSS exposure.
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires.
+          example: 900
+        user:
+          # Included so the dashboard can render immediately, without a
+          # second request to /users/me.
+          $ref: '#/components/schemas/User'
+
+    RefreshResponse:
+      type: object
+      required: [accessToken, tokenType, expiresIn]
+      properties:
+        accessToken:
+          type: string
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresIn:
+          type: integer
+          example: 900
+
+    Transaction:
+      # One stored document serves both sides; the API "projects" it to the
+      # caller's point of view (req. 5c).
+      type: object
+      required: [id, direction, counterpartyEmail, amount, createdAt]
+      properties:
+        id:
+          type: string
+          readOnly: true
+          example: 6730f2d8a9d4e2b1c8f0a456
+        direction:
+          type: string
+          enum: [sent, received]
+          description: Whether the caller sent or received this money.
+        counterpartyEmail:
+          allOf: # allOf + $ref = "an Email, plus this extra description"
+            - $ref: '#/components/schemas/Email'
+          description: The OTHER user - the receiver if you sent, the sender if you received.
+        amount:
+          type: integer
+          description: Signed agorot from the caller's view. -2500 = you sent ₪25; +2500 = you received ₪25.
+          example: -2500
+        createdAt:
+          type: string
+          format: date-time
+          readOnly: true
+
+    TransactionPage:
+      type: object
+      required: [items, page, limit, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 10
+        total:
+          type: integer
+          description: Total number of transactions, so the UI knows how many pages exist.
+          example: 37
+
+    TransferResponse:
+      type: object
+      required: [transaction, balance]
+      properties:
+        transaction:
+          $ref: '#/components/schemas/Transaction'
+        balance:
+          type: integer
+          description: The sender's new balance in agorot, so the UI can update without refetching.
+          example: 520900
+
+    # ---- The one error shape --------------------------------------------------
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              # Machine-readable: the frontend switches on this. Stable - don't
+              # rename these once the frontend uses them.
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - EMAIL_TAKEN
+                - USER_NOT_FOUND
+                - INVALID_OTP
+                - OTP_EXPIRED
+                - OTP_ATTEMPTS_EXCEEDED
+                - OTP_DELIVERY_FAILED
+                - ALREADY_VERIFIED
+                - INVALID_CREDENTIALS
+                - ACCOUNT_NOT_VERIFIED
+                - UNAUTHORIZED
+                - TOKEN_EXPIRED
+                - RECIPIENT_NOT_FOUND
+                - SELF_TRANSFER
+                - INSUFFICIENT_FUNDS
+                - RATE_LIMITED
+                - NOT_FOUND          # no such route (any unknown URL)
+                - PAYLOAD_TOO_LARGE  # request body over the 10kb limit (status 413)
+                - INTERNAL_ERROR
+            message:
+              # Human-readable: safe to show to the user. Never contains stack
+              # traces or internal details.
+              type: string
+            fields:
+              # Only for VALIDATION_ERROR: field name -> what's wrong with it,
+              # so the form can show the message under the right input.
+              type: object
+              additionalProperties:
+                type: string
+
+    # ---- Database documents (Phase 3) -----------------------------------------
+    # NOT request or response bodies. These describe what MongoDB stores, so the
+    # spec documents the whole system in one place. The API never returns these
+    # shapes directly: responses go through whitelists (User, Transaction above).
+    # Source of truth for the code: server/src/models/*.js.
+    DbUser:
+      description: |
+        Collection `users`. Unique index on `email`.
+        TTL index on `otp.expiresAt`: MongoDB deletes an unverified user once
+        its code expires (its background job runs about once a minute, so up
+        to ~60 s late; sign-up also removes an expired pending user with the
+        same email at once). Verified users have `otp: null`, which a TTL
+        index ignores, so they are never deleted.
+        Private fields (passwordHash, otp) never appear in API responses.
+      type: object
+      required: [_id, email, passwordHash, phone, otpChannel, isVerified, balance, createdAt]
+      properties:
+        _id:
+          type: string
+          description: ObjectId. The API shows it as `User.id`.
+          example: 6730f1c2a9d4e2b1c8f0a123
+        email:
+          type: string
+          description: Trimmed + lowercased. Unique index.
+        passwordHash:
+          type: string
+          description: bcrypt hash (cost 12).
+        phone:
+          type: string
+          description: E.164.
+        otpChannel:
+          type: string
+          enum: [email, sms]
+        isVerified:
+          type: boolean
+        balance:
+          type: integer
+          minimum: 0
+          description: Agorot. 0 until verified, then random.
+        otp:
+          type: object
+          nullable: true
+          description: The pending code; null once verified.
+          required: [hash, expiresAt, attempts]
+          properties:
+            hash:
+              type: string
+              description: bcrypt hash (cost 10) of the 6-digit code.
+            expiresAt:
+              type: string
+              format: date-time
+              description: TTL index - the whole user is deleted after this time.
+            attempts:
+              type: integer
+              description: Wrong guesses so far (max 5). Incremented with $inc.
+        createdAt:
+          type: string
+          format: date-time
+
+    DbTransaction:
+      description: |
+        Collection `transactions`. Indexes: { fromId, createdAt } and { toId, createdAt }.
+        Written inside a MongoDB transaction together with both balance changes.
+      type: object
+      required: [_id, fromId, toId, fromEmail, toEmail, amount, createdAt]
+      properties:
+        _id:
+          type: string
+          description: ObjectId. The API shows it as `Transaction.id`.
+        fromId:
+          type: string
+          description: ObjectId of the sender (DbUser._id).
+        toId:
+          type: string
+          description: ObjectId of the receiver (DbUser._id).
+        fromEmail:
+          type: string
+          description: Copied at transfer time.
+        toEmail:
+          type: string
+          description: Copied at transfer time.
+        amount:
+          type: integer
+          minimum: 1
+          description: Always positive agorot; the API adds the sign per viewer.
+        createdAt:
+          type: string
+          format: date-time
+
+    DbRefreshToken:
+      description: |
+        Collection `refreshtokens`. Unique index on `tokenHash`, index on `userId`,
+        TTL index on `expiresAt` (MongoDB deletes expired documents by itself).
+      type: object
+      required: [_id, tokenHash, userId, expiresAt, createdAt]
+      properties:
+        _id:
+          type: string
+          description: ObjectId (never used by the API).
+        tokenHash:
+          type: string
+          description: SHA-256 of the refresh token. The token itself is never stored.
+        userId:
+          type: string
+          description: ObjectId of the owner (DbUser._id).
+        expiresAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when used (rotation) or on logout. Reuse of a revoked token signs out all sessions.
+        createdAt:
+          type: string
+          format: date-time
